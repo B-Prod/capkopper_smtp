@@ -1,0 +1,40 @@
+<?php
+
+/**
+ * @file
+ * Installation file for capKopper SMTP.
+ */
+
+/**
+ * Implements hook_requirements().
+ */
+function capkopper_smtp_requirements($phase) {
+  if ($phase === 'install') {
+    return array();
+  }
+
+  $info = capkopper_smtp_mailsystem_info();
+  return array(
+    'capkopper_smtp' => array(
+      'title' => t('%name module', array('%name' => 'capKopper SMTP')),
+      'value' => $info['requirement']['value'],
+      'description' => $info['requirement']['description'],
+      'severity' => $info['requirement']['severity'],
+    ),
+  );
+}
+
+/**
+ * Implements hook_uninstall().
+ *
+ * Note that those variables should not be stored in the database, but set in
+ * the settings.php file.
+ *
+ * We just ensure they are removed if they were unproperly stored, for example
+ * when using drush.
+ */
+function capkopper_smtp_uninstall() {
+  variable_del('capkopper_smtp:environment');
+  variable_del('ck_smtp:recipients');
+  variable_del('ck_smtp:account');
+}

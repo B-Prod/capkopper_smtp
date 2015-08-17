@@ -1,0 +1,259 @@
+<?php
+/**
+ * @file
+ * Provides a extra transport class for Swiftmailer that allows to use capKopper SMTP gateway.
+ */
+
+/**
+ * @defgroup Drupal hooks
+ * @{
+ */
+
+/**
+ * Implements hook_mail_alter().
+ *
+ * Tasks performed:
+ * - addition of the capKopper SMTP headers.
+ * - add theme logo as inline attachment, if the theme handles this feature.
+ */
+function capkopper_smtp_mail_alter(&$message) {
+  if (module_exists('mailsystem')) {
+    $mailsystem = mailsystem_get();
+
+    if ($mailsystem[mailsystem_default_id()] === 'SWIFTMailSystem') {
+      // Add headers.
+      if (SWIFTMAILER_TRANSPORT_SMTP === variable_get('swiftmailer_transport')) {
+        foreach (capkopper_smtp_environment_variables() as $key => $info) {
+          if (isset($info['value']) && is_string($info['value']) && strlen($info['value'])) {
+            $message['headers'][$info['name']] = check_plain($info['value']);
+          }
+        }
+      }
+
+      // This cannot be handled directly by the theme, specifically when the mail
+      // is sent on an administrative page (with admin theme) and the Mail System
+      // theme is set to another theme (basically the default theme).
+      $theme = mailsystem_get_mail_theme();
+      $theme_settings = theme_get_setting('capkopper_smtp', $theme);
+
+      if (!empty($theme_settings['logo'])) {
+        $logo_uri = drupal_get_path('theme', $theme) . '/' . $theme_settings['logo'];
+
+        if (file_exists($logo_uri)) {
+          $message['params']['images'][] = (object) array(
+            'uri' => $logo_uri,
+            'filename' => 'logo.png',
+            'filemime' => 'image/png',
+            'cid' => 'logo',
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for swiftmailer_admin_transport_page().
+ *
+ * @see swiftmailer_admin_transport_form()
+ */
+function capkopper_smtp_form_swiftmailer_admin_transport_form_alter(&$form, &$form_state) {
+  // If the Swiftmailer library is not found, the "transport" options are not
+  // available.
+  if (!isset($form['transport'])) {
+    return;
+  }
+
+  $info = capkopper_smtp_mailsystem_info();
+  if (!$info['enabled']) {
+    return;
+  }
+
+  if (!$info['active']) {
+    drupal_set_message($info['requirement']['description'], 'warning');
+    return;
+  }
+
+  $smtp_form = &$form['transport']['configuration'][SWIFTMAILER_TRANSPORT_SMTP];
+
+  $smtp_form['title']['#weight'] = -50;
+  $smtp_form['description']['#weight'] = -49;
+  $smtp_form['capkopper_state'] = array(
+    '#markup' => '<p>' . $info['requirement']['description'] . '</p>',
+    '#weight' => -48,
+  );
+}
+
+/**
+ * @} End of "defgroup Drupal hooks".
+ *
+ * @defgroup Swiftmailer hooks
+ * @{
+ */
+
+/**
+ * Implements hook_swiftmailer_alter().
+ */
+function capkopper_smtp_swiftmailer_alter(Swift_Mailer &$mailer, Swift_Message &$message) {
+  if (module_exists('emogrifier') && module_exists('mailsystem')) {
+    if (!extension_loaded('dom') || !_emogrifier_available()) {
+      return;
+    }
+
+    $emogrifier = new \Pelago\Emogrifier($message->getBody());
+    $theme = mailsystem_get_mail_theme();
+
+    if ($theme_settings = theme_get_setting('capkopper_smtp', $theme)) {
+      if (isset($theme_settings['css']) && is_string($theme_settings['css']) && strlen($theme_settings['css'])) {
+        $email_css = drupal_get_path('theme', $theme) . '/' . $theme_settings['css'];
+
+        if (file_exists($email_css)) {
+          $emogrifier->setCss(file_get_contents($email_css));
+        }
+      }
+    }
+
+    $message->setBody(@$emogrifier->emogrify());
+  }
+}
+
+/**
+ * Implements hook_preprocess_swiftmailer().
+ *
+ * @see template_preprocess_swiftmailer()
+ */
+function capkopper_smtp_preprocess_swiftmailer(&$variables) {
+  $variables['logo'] = '';
+
+  // Build the image tag for the logo, using inline attachment if applicable.
+  if (module_exists('mailsystem')) {
+    $mailsystem = mailsystem_get();
+
+    if (!empty($variables['params']['images'])) {
+      foreach ($variables['params']['images'] as $image) {
+        if ($image->cid === 'logo') {
+          $alt = t('@sitename logo', array('@sitename' => variable_get('site_name', 'Drupal')));
+
+          if ($mailsystem[mailsystem_default_id()] === 'SWIFTMailSystem') {
+            $info = image_get_info($image->uri);
+            $variables['logo'] = '<img src="cid.logo" width="' . $info['width'] . '" height="' . $info['height'] . '" alt="' . $alt . '" />';
+          }
+          else {
+            $variables['logo'] = theme('image', array(
+              'path' => url($image->uri, array('absolute' => TRUE)),
+              'alt' => $alt,
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  // Convert to HTML if necessary.
+  $convert = array();
+
+  // Do not process if the format is already set: this means that the module
+  // delivering the email message want to keep control on the format.
+  $convert[] = empty($variables['params']['format']);
+
+  // Do not process if the default format is not HTML.
+  $convert[] = variable_get('swiftmailer_format', SWIFTMAILER_VARIABLE_FORMAT_DEFAULT) === SWIFTMAILER_FORMAT_HTML;
+
+  // Do not convert if the content type is already set and it has to be respected.
+  $convert[] = (!variable_get('swiftmailer_respect_format', SWIFTMAILER_VARIABLE_RESPECT_FORMAT_DEFAULT) || empty($variables['headers']['Content-Type']));
+
+  // Do not convert if the message is already HTML.
+  $convert[] = empty($variables['headers']['Content-Type']) || !preg_match('/' . preg_quote(SWIFTMAILER_FORMAT_HTML, '/') . '\s*\;/U', $variables['headers']['Content-Type']);
+
+  if (count(array_filter($convert)) == 4) {
+    $variables['body'] = _filter_autop($variables['body']);
+  }
+}
+
+/**
+ * @} End of "defgroup Swiftmailer hooks".
+ */
+
+/**
+ * Gather some information related to the configuration of this module.
+ */
+function capkopper_smtp_mailsystem_info() {
+  $info = array(
+    'mailsystem' => mailsystem_get(),
+    'enabled' => TRUE,
+    'active' => TRUE,
+  );
+
+  $t_args = array(
+    '!modules' => url('admin/modules'),
+    '!mailsystem' => url('admin/config/system/mailsystem'),
+    '!swiftmailer' => url('admin/config/people/swiftmailer/transport'),
+  );
+
+  if ($info['mailsystem'][mailsystem_default_id()] !== 'SWIFTMailSystem') {
+    $info['enabled'] = FALSE;
+    $info['active'] = FALSE;
+    $info['requirement'] = array(
+      'value' => t('Not enabled'),
+      'description' => t('The capKopper SMTP gateway relies on the SwiftMailer mail system, which is not currently the default mail system. You should either <a href="!modules">disable the capKopper SMTP module</a> or <a href="!mailsystem">modify the mail system settings</a>.', $t_args),
+      'severity' => REQUIREMENT_WARNING,
+    );
+  }
+  elseif (SWIFTMAILER_TRANSPORT_SMTP !== variable_get('swiftmailer_transport')) {
+    $info['active'] = FALSE;
+    $info['requirement'] = array(
+      'value' => t('Enabled but not active'),
+      'description' => t('SwiftMailer is the currently enabled mail system, but the selected transport type is not SMTP as expected. So you should either <a href="!modules">disable the capKopper SMTP module</a> or <a href="!swiftmailer">change the transport type</a>.', $t_args),
+      'severity' => REQUIREMENT_WARNING,
+    );
+  }
+  else {
+    $items = array();
+
+    foreach (capkopper_smtp_environment_variables() as $key => $variable) {
+      $value = isset($variable['value']) ? check_plain($variable['value']) : t('Undefined');
+      $items[] = t('@variable: %value', array('@variable' => $key, '%value' => $value));
+    }
+
+    $list = theme('item_list', array('items' => $items));
+    $info['requirement'] = array(
+      'value' => t('Enabled'),
+      'description' => t('The variables related to the capKopper SMTP gateway should be defined in the settings.php file. The current values of available variables are: !list', array('!list' => $list)),
+      'severity' => REQUIREMENT_OK,
+    );
+  }
+
+  return $info;
+}
+
+/**
+ * Get a list of environment variables specific to capKopper SMTP gateway.
+ */
+function capkopper_smtp_environment_variables() {
+  $variables = &drupal_static(__FUNCTION__);
+
+  if (!isset($variables)) {
+    $variables = array(
+      'capkopper_smtp:environment' => array(
+        'name' => 'X-Capkopper-Env',
+        'description' => t('Defines the environment. Usual values are <em>dev</em> or <em>development</em> for the development environment, <em>staging</em>, <em>preprod</em> or <em>preproduction</em> for the staging environment and <em>live</em>, <em>prod</em> or <em>production</em> for the production environment.'),
+      ),
+      'capkopper_smtp:recipients' => array(
+        'name' => 'X-Capkopper-Recipients',
+        'description' => t('A coma separated list of recipients that will override those specified while sending the message.'),
+        'value' => variable_get('capkopper_smtp:recipients'),
+      ),
+      'capkopper_smtp:account' => array(
+        'name' => 'X-Capkopper-Account',
+        'description' => t('May be used for filtering on the SMTP gateway, for example in the aim to redirect the message to a specific provider.'),
+        'value' => variable_get('capkopper_smtp:account'),
+      ),
+    );
+
+    foreach ($variables as $key => &$info) {
+      $info['value'] = variable_get($key);
+    }
+  }
+
+  return $variables;
+}
