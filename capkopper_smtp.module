@@ -10,6 +10,24 @@
  */
 
 /**
+ * Implements hook_modules_enabled().
+ *
+ * Do not use hook_enable() because the Default Config module erases the
+ * variable when hook_modules_installed() is called.
+ */
+function capkopper_smtp_modules_enabled($modules) {
+  if (in_array('capkopper_smtp', $modules)) {
+    // Do not use the normal libraries path if the Swiftmailer library is provided
+    // by the current distribution.
+    $expected_path = 'profiles/' . drupal_get_profile() . '/libraries/swiftmailer';
+
+    if (is_dir($expected_path)) {
+      variable_set('swiftmailer_path', $expected_path);
+    }
+  }
+}
+
+/**
  * Implements hook_mail_alter().
  *
  * Tasks performed:
