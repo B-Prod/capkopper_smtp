@@ -5,6 +5,7 @@ package = Mail
 dependencies[] = defaultconfig
 dependencies[] = features
 dependencies[] = swiftmailer
+features[defaultconfig][] = strongarm:mail_system
 features[defaultconfig][] = strongarm:swiftmailer_character_set
 features[defaultconfig][] = strongarm:swiftmailer_convert_mode
 features[defaultconfig][] = strongarm:swiftmailer_format
